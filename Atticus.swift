@@ -4476,6 +4476,7 @@ enum Updater {
         return sh(#"cd "$0" 2>/dev/null && git log -1 --format='%h · %cd' --date=format:'%b %-d, %Y'"#).out.trimmingCharacters(in: .whitespacesAndNewlines)
     }()
     static func check(_ done: @escaping () -> Void = {}) {
+        status = "Auto-update disabled in the Tech Booster fork"; done(); return   // TB: se actualiza solo a mano desde nuestro fork (AG46)
         if managedByNix { status = "Run nix profile upgrade or nix run again."; done(); return }
         if src.isEmpty || ProcessInfo.processInfo.environment["ATTICUS_DIR"] != nil { status = "Preview build"; done(); return }
         guard !checking else { done(); return }

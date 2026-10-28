@@ -46,7 +46,7 @@ GUMROAD_PRODUCT = ''   # Gumroad product ID (4o1C13Q132kPu-TW7b-sAA== when sales
 BUY = 'https://3370759087892.gumroad.com/l/atticus'
 KEY_FILE = os.path.join(DIR, 'license')
 # Anonymous counts, timings and error locations under a random install ID; never asks or screen content. Off in Settings → Privacy. Empty key = off.
-POSTHOG_KEY = os.environ.get('ATTICUS_POSTHOG_KEY', 'phc_mGpLLzJtYTToBF8uSkqkUxMMG9ANmQWKDBnpsRDmzy6P')   # public capture token; empty override disables
+POSTHOG_KEY = os.environ.get('ATTICUS_POSTHOG_KEY', '')   # public capture token; empty override disables
 APP_COMMIT = 'unknown'
 try:
     APP_VERSION = Path(ME).with_name('VERSION').read_text().strip()
