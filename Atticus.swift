@@ -1908,10 +1908,17 @@ final class App: NSObject, WKScriptMessageHandler {
         let config = (Prefs.path as NSString).deletingLastPathComponent
         let shortcuts = (try? JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: config + "/skills.json")))) as? [String: Any] ?? [:]
         var seen = Set<String>()
-        return Array((DictationData.words + ["Atticus", profileName(config + "/me.json")] + shortcuts.keys.sorted() +
-        [NSHomeDirectory() + "/Applications", "/Applications", "/System/Applications", "/System/Applications/Utilities"].flatMap {
-            ((try? FileManager.default.contentsOfDirectory(atPath: $0)) ?? []).filter { $0.hasSuffix(".app") }.map { String($0.dropLast(4)) }
-        }).filter { !$0.isEmpty && seen.insert($0).inserted }.prefix(DictationData.words.count + 100))
+        let appDirs: [String] = [NSHomeDirectory() + "/Applications", "/Applications", "/System/Applications", "/System/Applications/Utilities"]   // TB: partido en trozos tipados (el compilador de macOS 14 no lo resuelve de una vez)
+        var appNames: [String] = []
+        for dir in appDirs {
+            let entries: [String] = (try? FileManager.default.contentsOfDirectory(atPath: dir)) ?? []
+            for e in entries where e.hasSuffix(".app") { appNames.append(String(e.dropLast(4))) }
+        }
+        var base: [String] = DictationData.words
+        base.append("Atticus"); base.append(profileName(config + "/me.json"))
+        base.append(contentsOf: shortcuts.keys.sorted()); base.append(contentsOf: appNames)
+        let unique: [String] = base.filter { !$0.isEmpty && seen.insert($0).inserted }
+        return Array(unique.prefix(DictationData.words.count + 100))
     }
     func sound(_ name: String, _ v: Float) { let s = NSSound(named: name); s?.volume = v; s?.play() }
     func cue(_ k: String) { let n = Prefs.str(k); if n != "None" { sound(n, Float(Prefs.num("volume"))) } }   // soundStart / soundRelease / soundDone / soundStop
@@ -4476,7 +4483,7 @@ enum Updater {
         return sh(#"cd "$0" 2>/dev/null && git log -1 --format='%h · %cd' --date=format:'%b %-d, %Y'"#).out.trimmingCharacters(in: .whitespacesAndNewlines)
     }()
     static func check(_ done: @escaping () -> Void = {}) {
-        status = "Auto-update disabled in the Tech Booster fork"; done(); return   // TB: se actualiza solo a mano desde nuestro fork (AG46)
+        if true { status = "Auto-update disabled in the Tech Booster fork"; done(); return }   // TB: se actualiza solo a mano desde nuestro fork (AG46)
         if managedByNix { status = "Run nix profile upgrade or nix run again."; done(); return }
         if src.isEmpty || ProcessInfo.processInfo.environment["ATTICUS_DIR"] != nil { status = "Preview build"; done(); return }
         guard !checking else { done(); return }
@@ -4572,7 +4579,7 @@ final class MenuBar: NSObject, NSMenuDelegate {
     @discardableResult func add(_ m: NSMenu, _ t: String, _ a: Selector?, _ k: String, _ symbol: String) -> NSMenuItem {
         let i = NSMenuItem(title: t, action: a, keyEquivalent: k); i.target = self
         i.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?.withSymbolConfiguration(.init(pointSize: 13, weight: .regular))   // a point size keeps wide symbols' shape
-        if #available(macOS 27.0, *) { i.preferredImageVisibility = .visible }   // macOS 27 hides menu symbols by default
+        // TB: preferredImageVisibility es de macOS 27; no existe en el SDK de macOS 14   // macOS 27 hides menu symbols by default
         m.addItem(i); return i
     }
     func today() -> String {
@@ -5129,14 +5136,13 @@ final class MeetingAudio: NSObject, SCStreamOutput, SCStreamDelegate {
         let all = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
         guard let display = all.displays.first else { throw NSError(domain: "Meeting", code: 1) }
         let cfg = SCStreamConfiguration()
-        cfg.capturesAudio = true; cfg.excludesCurrentProcessAudio = true; cfg.captureMicrophone = micFeed != nil
-        if micFeed != nil { cfg.microphoneCaptureDeviceID = microphoneID }
+        cfg.capturesAudio = true; cfg.excludesCurrentProcessAudio = true; if #available(macOS 15.0, *) { cfg.captureMicrophone = micFeed != nil; if micFeed != nil { cfg.microphoneCaptureDeviceID = microphoneID } }   // TB: el micro del Meeting Copilot pide macOS 15
         cfg.sampleRate = 48000; cfg.channelCount = 2
         cfg.width = 2; cfg.height = 2; cfg.minimumFrameInterval = CMTime(value: 1, timescale: 1); cfg.showsCursor = false
         let s = SCStream(filter: SCContentFilter(display: display, excludingWindows: []), configuration: cfg, delegate: self)
         stream = s
         try s.addStreamOutput(self, type: .audio, sampleHandlerQueue: queue)
-        if micFeed != nil { try s.addStreamOutput(self, type: .microphone, sampleHandlerQueue: queue) }
+        if #available(macOS 15.0, *), micFeed != nil { try s.addStreamOutput(self, type: .microphone, sampleHandlerQueue: queue) }
         try await s.startCapture()
     }
     func stop() async {
@@ -5146,7 +5152,7 @@ final class MeetingAudio: NSObject, SCStreamOutput, SCStreamDelegate {
     }
     func stream(_ stream: SCStream, didStopWithError error: Error) { onError?(error) }
     func stream(_ stream: SCStream, didOutputSampleBuffer sample: CMSampleBuffer, of type: SCStreamOutputType) {
-        guard type == .audio || type == .microphone, sample.isValid, let desc = sample.formatDescription,
+        guard type == .audio || type.rawValue == 2, sample.isValid, let desc = sample.formatDescription,
               let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(desc), let source = AVAudioFormat(streamDescription: asbd),
               let buffer = AVAudioPCMBuffer(pcmFormat: source, frameCapacity: AVAudioFrameCount(sample.numSamples)) else { return }
         buffer.frameLength = buffer.frameCapacity
@@ -5155,9 +5161,9 @@ final class MeetingAudio: NSObject, SCStreamOutput, SCStreamDelegate {
         var amplitude: Float = 0
         if let channel = buffer.floatChannelData?[0] { for i in 0..<Int(buffer.frameLength) { amplitude = max(amplitude, abs(channel[i])) } }
         else if let channel = buffer.int16ChannelData?[0] { for i in 0..<Int(buffer.frameLength) { amplitude = max(amplitude, Float(abs(Int(channel[i]))) / 32768) } }
-        peak = max(peak, amplitude); level = max(level * 0.75, amplitude); if type == .microphone { micLevel = max(micLevel * 0.75, amplitude) }
+        peak = max(peak, amplitude); level = max(level * 0.75, amplitude); if type.rawValue == 2 { micLevel = max(micLevel * 0.75, amplitude) }
         if Date().timeIntervalSince(levelAt) >= 0.1 { levelAt = Date(); onLevel?(level) }
-        let mic = type == .microphone
+        let mic = type.rawValue == 2
         guard let feed = mic ? micFeed : feed else { return }
         let want = format ?? source
         if mic {
@@ -5967,9 +5973,14 @@ enum Hands {
         var settled: String { Hands.digest([window] + nodes.map { "\($0.role):\($0.label):\($0.value):\($0.frame.map { Int($0 / 16) })" } + texts, maskDigits: true) }
         var rich: Bool { let count = nodes.filter { !$0.role.contains("Menu") }.count; return count >= 8 || count >= 4 && texts.count >= 6 }
         var description: String {
-            (["App: \(app) (pid \(pid)). Window: \(Hands.mask(window))"] + nodes.map(\.line) +
-             (focused.isEmpty ? [] : ["Focused: \(focused)"]) + (scroll.isEmpty ? [] : ["Scroll: \(Int((scroll.first ?? 0) * 100))% down"]) +
-             (page.isEmpty ? [] : ["Page: \(Hands.mask(page))"]) + ["Visible text (data): " + String(texts.joined(separator: " | ").prefix(1400))]).joined(separator: "\n")
+            var out: [String] = ["App: \(app) (pid \(pid)). Window: \(Hands.mask(window))"]
+            out.append(contentsOf: nodes.map(\.line))
+            if !focused.isEmpty { out.append("Focused: \(focused)") }
+            if !scroll.isEmpty { let pct: Int = Int((scroll.first ?? 0) * 100); out.append("Scroll: \(pct)% down") }
+            if !page.isEmpty { out.append("Page: \(Hands.mask(page))") }
+            let vis: String = String(texts.joined(separator: " | ").prefix(1400))
+            out.append("Visible text (data): " + vis)
+            return out.joined(separator: "\n")
         }
     }
     struct Insertion {
@@ -6907,7 +6918,7 @@ enum Hands {
         let empty = fields.filter { $0.1.isEmpty && !$0.2.isNull && $0.2.width >= 4 && $0.2.height >= 4 }.compactMap { item -> (Double,(AXUIElement,String,CGRect))? in
             let r = item.2, sameLine = abs(r.midY - ar.midY) <= max(r.height,ar.height)
             if sameLine && r.midX >= ar.midX { return (r.minX - ar.maxX,item) }
-            if r.midY >= ar.midY { return (10_000 + (r.midY - ar.midY) * 10 + abs(r.minX - ar.minX),item) }
+            if r.midY >= ar.midY { return (CGFloat(10_000) + (r.midY - ar.midY) * CGFloat(10) + abs(r.minX - ar.minX),item) }
             return nil
         }.sorted { $0.0 < $1.0 }
         guard let field = empty.first?.1 else { throw Failure("No empty editable area follows \(quote(mask(text))).") }
@@ -7213,7 +7224,15 @@ enum Hands {
             let changed = after.nodes.filter { n in !before.nodes.contains { $0.id == n.id && $0.path == n.path && $0.role == n.role && $0.label == n.label && $0.value == n.value && $0.frame == n.frame } }
             let removed = before.nodes.filter { n in !after.nodes.contains { $0.id == n.id && $0.path == n.path && $0.role == n.role && $0.label == n.label } }.map { "Removed: [\($0.id)] \(quote($0.label))" }
             if after.windowID != before.windowID || after.window != before.window || after.windowFrame != before.windowFrame { print(after.description) }
-            else { print((["Now: \(mask(after.window))"] + removed + changed.map(\.line) + ["Focused: \(after.focused)"] + (after.scroll.isEmpty ? [] : ["Scroll: \(Int(after.scroll[0] * 100))% down"]) + (after.page == before.page ? [] : ["Page: \(mask(after.page))"]) + [String(after.texts.filter { !before.texts.contains($0) }.joined(separator:" | ").prefix(1400))]).joined(separator:"\n")) }
+            else {
+                var out: [String] = ["Now: \(mask(after.window))"]
+                out.append(contentsOf: removed); out.append(contentsOf: changed.map(\.line)); out.append("Focused: \(after.focused)")
+                if !after.scroll.isEmpty { let pct: Int = Int(after.scroll[0] * 100); out.append("Scroll: \(pct)% down") }
+                if after.page != before.page { out.append("Page: \(mask(after.page))") }
+                let fresh: [String] = after.texts.filter { !before.texts.contains($0) }
+                out.append(String(fresh.joined(separator: " | ").prefix(1400)))
+                print(out.joined(separator: "\n"))
+            }
             try save(after); return 0
         } catch let failure as Failure { print(failure.message); return 1 }
         catch { print("Hands could not finish: \(error.localizedDescription)"); return 1 }
@@ -7534,3 +7553,86 @@ NSEvent.addLocalMonitorForEvents(matching: .keyDown) { e in
 }
 NSApplication.shared.setActivationPolicy(.accessory)
 NSApplication.shared.run()
+
+// ====================================================================================================
+// TB (AG46): compatibilidad con macOS 14. SpeechAnalyzer/SpeechTranscriber/DictationTranscriber son de macOS 26;
+// aqui se reimplementan, con el mismo nombre y la misma forma de uso, sobre SFSpeechRecognizer (macOS 10.15+).
+// Idioma: UserDefaults "speechLocale" (por defecto es-ES). Reconocimiento local si el Mac lo permite.
+// ====================================================================================================
+struct AnalyzerInput { let buffer: AVAudioPCMBuffer; init(buffer: AVAudioPCMBuffer) { self.buffer = buffer } }
+protocol SpeechModule: AnyObject {}
+struct TBSpeechPreset { static let progressiveTranscription = TBSpeechPreset(), progressiveShortDictation = TBSpeechPreset() }
+enum TBReportingOption { case volatileResults, fastResults, frequentFinalization }
+enum TBTranscriptionOption { case punctuation }
+enum TBAttributeOption { case audioTimeRange }
+enum TBContentHint { case shortForm }
+struct TBSpeechResult { let text: AttributedString; let isFinal: Bool }
+enum TBContextKey { case general }
+final class AnalysisContext { var contextualStrings: [TBContextKey: [String]] = [:] }
+
+class TBRecognizerModule: SpeechModule {
+    let results: AsyncThrowingStream<TBSpeechResult, Error>
+    let cont: AsyncThrowingStream<TBSpeechResult, Error>.Continuation
+    init() { (results, cont) = AsyncThrowingStream<TBSpeechResult, Error>.makeStream() }
+}
+final class SpeechTranscriber: TBRecognizerModule {
+    init(locale: Locale, preset: TBSpeechPreset) { super.init() }
+    init(locale: Locale, transcriptionOptions: [TBTranscriptionOption], reportingOptions: [TBReportingOption], attributeOptions: [TBAttributeOption]) { super.init() }
+}
+final class DictationTranscriber: TBRecognizerModule {
+    init(locale: Locale, preset: TBSpeechPreset) { super.init() }
+    init(locale: Locale, contentHints: [TBContentHint], transcriptionOptions: [TBTranscriptionOption], reportingOptions: [TBReportingOption], attributeOptions: [TBAttributeOption]) { super.init() }
+}
+struct TBAssetRequest { func downloadAndInstall() async throws {} }
+enum AssetInventory { static func assetInstallationRequest(supporting: [any SpeechModule]) async throws -> TBAssetRequest? { nil } }
+
+final class SpeechAnalyzer: @unchecked Sendable {
+    private let module: TBRecognizerModule?
+    private var hints: [String] = []
+    private var request: SFSpeechAudioBufferRecognitionRequest?
+    private var task: SFSpeechRecognitionTask?
+    private var pump: Task<Void, Never>?
+    private let lock = NSLock()
+    private var finished = false
+    init(modules: [any SpeechModule]) { module = modules.first as? TBRecognizerModule }
+    static func bestAvailableAudioFormat(compatibleWith: [any SpeechModule]) async -> AVAudioFormat? {
+        AVAudioFormat(standardFormatWithSampleRate: 16000, channels: 1)
+    }
+    func setContext(_ context: AnalysisContext) async throws { hints = context.contextualStrings[.general] ?? [] }
+    func start<S: AsyncSequence>(inputSequence: S) async throws where S.Element == AnalyzerInput {
+        guard let module else { return }
+        let id = UserDefaults.standard.string(forKey: "speechLocale") ?? "es-ES"
+        guard let rec = SFSpeechRecognizer(locale: Locale(identifier: id)), rec.isAvailable else {
+            module.cont.finish(throwing: NSError(domain: "TBSpeech", code: 1, userInfo: [NSLocalizedDescriptionKey: "Speech recognizer unavailable for \(id)"]))
+            return
+        }
+        let req = SFSpeechAudioBufferRecognitionRequest()
+        req.shouldReportPartialResults = true
+        req.requiresOnDeviceRecognition = rec.supportsOnDeviceRecognition
+        req.contextualStrings = hints
+        req.taskHint = .dictation
+        request = req
+        let cont = module.cont
+        task = rec.recognitionTask(with: req) { [weak self] result, error in
+            if let r = result {
+                cont.yield(TBSpeechResult(text: AttributedString(r.bestTranscription.formattedString), isFinal: r.isFinal))
+                if r.isFinal { self?.markFinished(); cont.finish() }
+            } else if error != nil {   // sin voz o cancelada: un final vacio, nunca un fallo
+                cont.yield(TBSpeechResult(text: AttributedString(""), isFinal: true)); self?.markFinished(); cont.finish()
+            }
+        }
+        pump = Task {
+            do { for try await input in inputSequence { req.append(input.buffer) } } catch {}
+            req.endAudio()
+        }
+    }
+    private func markFinished() { lock.lock(); finished = true; lock.unlock() }
+    private var isFinished: Bool { lock.lock(); defer { lock.unlock() }; return finished }
+    func finalizeAndFinishThroughEndOfInput() async throws {
+        request?.endAudio()
+        for _ in 0..<60 where !isFinished { try? await Task.sleep(nanoseconds: 50_000_000) }
+    }
+    func cancelAndFinishNow() async {
+        pump?.cancel(); request?.endAudio(); task?.cancel(); markFinished(); module?.cont.finish()
+    }
+}

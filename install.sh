@@ -5,7 +5,7 @@
 set -e
 DIR="${ATTICUS_DIR:-$HOME/.atticus}"
 echo "Installing Atticus…"
-[ "$(sw_vers -productVersion | cut -d. -f1)" -ge 26 ] || { echo "Atticus needs macOS 26 or later."; exit 1; }
+[ "$(sw_vers -productVersion | cut -d. -f1)" -ge 14 ] || { echo "TB fork: needs macOS 14 or later."; exit 1; }
 if ! xcode-select -p >/dev/null 2>&1; then
   echo "First, Apple's command line tools. A macOS window will open: click Install."
   echo "When it finishes, paste the install line again."
